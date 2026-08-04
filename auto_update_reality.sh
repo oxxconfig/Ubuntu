@@ -26,18 +26,7 @@ if [ -z "$CONFIG_FILE" ]; then
 fi
 
 DOMAINS=(
-    "images.unsplash.com"
-    "www.lovelive-anime.jp"
-    "www.nvidia.com"
-    "www.twitch.tv"
-    "www.spotify.com"
-    "www.autodesk.com"
-    "www.target.com"
-    "www.amd.com"
     "www.dell.com"
-    "www.qualcomm.com"
-    "www.shopify.com"
-    "www.cisco.com"
     "www.microsoft.com"
     "www.lovelive-anime.jp"
     "dl.google.com"
@@ -55,7 +44,6 @@ DOMAINS=(
     "www.nvidia.com"
     "www.target.com"
     "www.amd.com"
-    "www.dell.com"
 )
 
 TEMP_FILE=$(mktemp)
