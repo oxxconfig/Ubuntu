@@ -1,11 +1,29 @@
-cat << 'EOF' > auto_update_reality_keep_old.sh
 #!/bin/bash
 
+# 1. 检查 root 权限
 if [ "$EUID" -ne 0 ]; then
   echo -e "\e[1;31m[-] 请使用 root 权限运行此脚本！\e[0m"
   exit 1
 fi
 
+# 2. 检查并自动安装 python3 依赖
+if ! command -v python3 &> /dev/null; then
+    echo -e "\e[1;33m[*] 未检测到 python3，正在尝试自动安装...\e[0m"
+    if command -v apt-get &> /dev/null; then
+        apt-get update -y && apt-get install -y python3
+    elif command -v yum &> /dev/null; then
+        yum install -y python3
+    elif command -v dnf &> /dev/null; then
+        dnf install -y python3
+    fi
+fi
+
+if ! command -v python3 &> /dev/null; then
+    echo -e "\e[1;31m[-] python3 安装失败，请手动安装后重试！\e[0m"
+    exit 1
+fi
+
+# 3. 自动匹配 config.json 路径
 CONFIG_FILE=""
 POSSIBLE_PATHS=(
     "/usr/local/etc/xray/config.json"
@@ -25,7 +43,7 @@ if [ -z "$CONFIG_FILE" ]; then
     exit 1
 fi
 
-# 筛选出的优质、绝无 Cloudflare 5秒盾的自建/大厂域名列表
+# 4. 精选优质大厂域名池
 DOMAINS=(
     "swdist.apple.com"
     "updates-http.cdn-apple.com"
@@ -41,15 +59,14 @@ DOMAINS=(
 )
 
 TEMP_FILE=$(mktemp)
+QUALIFIED_COUNT=0
 
 echo -e "\e[1;34m[*] 正在测速并检测域名 TLS1.3 / H2 支持情况...\e[0m"
 
 for domain in "${DOMAINS[@]}"; do
-    # 1. 抓取 TLS 调试日志到变量
-    CURL_LOG=$(curl -ivs "https://${domain}" --connect-timeout 2 -o /dev/null 2>&1)
-    
-    # 2. 抓取连接时间
-    TIME_CONN=$(curl -s -o /dev/null -w "%{time_connect}" "https://${domain}" --connect-timeout 2)
+    # 增加 --max-time 3 限制总耗时，防止 TLS 握手假死
+    CURL_LOG=$(curl -ivs "https://${domain}" --connect-timeout 2 --max-time 3 -o /dev/null 2>&1)
+    TIME_CONN=$(curl -s -o /dev/null -w "%{time_connect}" "https://${domain}" --connect-timeout 2 --max-time 3)
 
     TLS13=false
     H2=false
@@ -62,6 +79,12 @@ for domain in "${DOMAINS[@]}"; do
         if [ "$TLS13" = true ] && [ "$H2" = true ]; then
             echo "${LATENCY_MS}|${domain}" >> "$TEMP_FILE"
             echo -e "  [+] \e[1;32m$domain\e[0m - 延迟: ${LATENCY_MS}ms (TLS1.3: Yes, H2: Yes)"
+            
+            # 找到 3 个合格域名后立刻退出测速循环，极大加快执行速度
+            QUALIFIED_COUNT=$((QUALIFIED_COUNT + 1))
+            if [ "$QUALIFIED_COUNT" -ge 3 ]; then
+                break
+            fi
         fi
     fi
 done
@@ -72,6 +95,7 @@ if [ ! -s "$TEMP_FILE" ]; then
     exit 1
 fi
 
+# 在收集到的合格域名中随机抽取 1 个
 BEST_DOMAIN=$(sort -n -t'|' -k1 "$TEMP_FILE" | head -n 3 | shuf -n 1 | cut -d'|' -f2)
 rm -f "$TEMP_FILE"
 
@@ -79,7 +103,7 @@ NEW_SHORT_ID=$(openssl rand -hex 4)
 BACKUP_FILE="${CONFIG_FILE}.bak_$(date +%Y%m%d%H%M%S)"
 cp "$CONFIG_FILE" "$BACKUP_FILE"
 
-# 调用 Python 修改 JSON 配置
+# 5. 调用 Python 安全合并与更新 JSON 配置
 PY_RES=$(python3 - << ENDPython
 import json, sys
 
@@ -98,11 +122,11 @@ try:
             if stream_settings.get("security") == "reality":
                 reality_settings = stream_settings.get("realitySettings", {})
                 
-                # 仅更新域名
+                # 更新 SNI 伪装目标
                 reality_settings["dest"] = f"{new_sni}:443"
                 reality_settings["serverNames"] = [new_sni]
                 
-                # 读取已有的 shortIds 并追加新的，保持旧 ID 不丢失
+                # 读取已有 shortIds 并追加新的，保持旧 ID 不丢失
                 existing_short_ids = reality_settings.get("shortIds", [])
                 if not isinstance(existing_short_ids, list):
                     existing_short_ids = []
@@ -131,6 +155,7 @@ if [ "$PY_RES" != "SUCCESS" ]; then
     exit 1
 fi
 
+# 6. 重启服务
 if systemctl is-active --quiet xray; then
     systemctl restart xray
 elif systemctl is-active --quiet XrayR; then
@@ -143,9 +168,3 @@ echo -e "    ► 优选 SNI 域名 : \e[1;33m$BEST_DOMAIN\e[0m"
 echo -e "    ► 新增 ShortID  : \e[1;33m$NEW_SHORT_ID\e[0m"
 echo -e "    ► 配置备份文件  : \e[1;30m$BACKUP_FILE\e[0m"
 echo -e "\e[1;34m===============================================================\e[0m"
-
-rm -f auto_update_reality_keep_old.sh
-EOF
-
-chmod +x auto_update_reality_keep_old.sh
-./auto_update_reality_keep_old.sh
