@@ -12,9 +12,24 @@ function optimize_system_cron() {
           /etc/cron.daily/man-db \
           /etc/cron.weekly/man-db
 
-    # 2. 从用户 crontab 中移除 geodata 定时更新
+    # 2. 从当前用户 crontab 中安全移除 geodata 定时任务
     if crontab -l >/dev/null 2>&1; then
-        crontab -l | grep -v 'geodata.sh' | crontab - 2>/dev/null || true
+        CURRENT_CRON=$(crontab -l 2>/dev/null | grep -v 'geodata\.sh')
+        if [ -z "$CURRENT_CRON" ]; then
+            # 如果过滤后内容为空，直接清空用户 crontab，避免管道报错
+            crontab -r 2>/dev/null || true
+        else
+            # 重新写入不含 geodata.sh 的内容
+            echo "$CURRENT_CRON" | crontab -
+        fi
+    fi
+
+    # 2.1 补充清理系统级 /etc/cron.d/ 和 /etc/crontab 中的残留
+    if [ -d "/etc/cron.d" ]; then
+        grep -rl 'geodata\.sh' /etc/cron.d/ 2>/dev/null | xargs rm -f 2>/dev/null || true
+    fi
+    if [ -f "/etc/crontab" ]; then
+        sed -i '/geodata\.sh/d' /etc/crontab
     fi
 
     # 3. 彻底停用并禁用崩溃报告服务 (apport)
