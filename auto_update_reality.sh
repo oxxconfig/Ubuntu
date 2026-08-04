@@ -1,13 +1,11 @@
-cat << 'EOF' > auto_update_reality.sh
+cat << 'EOF' > auto_update_reality_keep_old.sh
 #!/bin/bash
 
-# 检查 root 权限
 if [ "$EUID" -ne 0 ]; then
   echo -e "\e[1;31m[-] 请使用 root 权限运行此脚本！\e[0m"
   exit 1
 fi
 
-# 1. 自动寻找 Xray 配置文件路径
 CONFIG_FILE=""
 POSSIBLE_PATHS=(
     "/usr/local/etc/xray/config.json"
@@ -23,13 +21,10 @@ for path in "${POSSIBLE_PATHS[@]}"; do
 done
 
 if [ -z "$CONFIG_FILE" ]; then
-    echo -e "\e[1;31m[-] 未自动检测到 config.json 路径，请确认 Xray 安装情况。\e[0m"
+    echo -e "\e[1;31m[-] 未自动检测到 config.json 路径！\e[0m"
     exit 1
 fi
 
-echo -e "\e[1;34m[+] 配置文件定位成功:\e[0m $CONFIG_FILE"
-
-# 2. 备选域名池（排除高频滥用的域名）
 DOMAINS=(
     "images.unsplash.com"
     "www.lovelive-anime.jp"
@@ -44,8 +39,6 @@ DOMAINS=(
     "www.shopify.com"
     "www.cisco.com"
 )
-
-echo -e "\e[1;34m[+] 正在自动检测域名延迟与 TLS1.3/H2 兼容性...\e[0m"
 
 TEMP_FILE=$(mktemp)
 
@@ -70,10 +63,7 @@ for domain in "${DOMAINS[@]}"; do
     fi
 done
 
-# 3. 从最佳的前 3 个域名中随机选取 1 个（分散批量 VPS 特征）
 BEST_DOMAIN=$(sort -n -t'|' -k1 "$TEMP_FILE" | head -n 3 | shuf -n 1 | cut -d'|' -f2)
-BEST_LATENCY=$(grep "|${BEST_DOMAIN}$" "$TEMP_FILE" | cut -d'|' -f1)
-
 rm -f "$TEMP_FILE"
 
 if [ -z "$BEST_DOMAIN" ]; then
@@ -81,15 +71,11 @@ if [ -z "$BEST_DOMAIN" ]; then
     exit 1
 fi
 
-echo -e "\e[1;32m[+] 自动选定最优伪装域名:\e[0m \e[1;33m$BEST_DOMAIN\e[0m (延迟: ${BEST_LATENCY} ms)"
-
-# 4. 生成 8 位随机 ShortID
 NEW_SHORT_ID=$(openssl rand -hex 4)
-
-# 5. 备份并修改配置
 BACKUP_FILE="${CONFIG_FILE}.bak_$(date +%Y%m%d%H%M%S)"
 cp "$CONFIG_FILE" "$BACKUP_FILE"
 
+# Python 精确合并 shortIds 数组
 python3 - << ENDPython
 import json
 
@@ -107,9 +93,21 @@ try:
             stream_settings = inbound.get("streamSettings", {})
             if stream_settings.get("security") == "reality":
                 reality_settings = stream_settings.get("realitySettings", {})
+                
+                # 仅更新域名
                 reality_settings["dest"] = f"{new_sni}:443"
                 reality_settings["serverNames"] = [new_sni]
-                reality_settings["shortIds"] = [new_short_id]
+                
+                # 读取已有的 shortIds 并追加新的，保持旧 ID 不丢失
+                existing_short_ids = reality_settings.get("shortIds", [])
+                if not isinstance(existing_short_ids, list):
+                    existing_short_ids = []
+                
+                # 确保空字符串或重复项被过滤
+                if new_short_id not in existing_short_ids:
+                    existing_short_ids.append(new_short_id)
+                
+                reality_settings["shortIds"] = existing_short_ids
                 stream_settings["realitySettings"] = reality_settings
                 modified = True
 
@@ -124,7 +122,6 @@ except Exception as e:
     print(f"ERROR: {str(e)}")
 ENDPython
 
-# 6. 重启服务并输出参数
 if systemctl is-active --quiet xray; then
     systemctl restart xray
 elif systemctl is-active --quiet XrayR; then
@@ -132,14 +129,12 @@ elif systemctl is-active --quiet XrayR; then
 fi
 
 echo -e "\e[1;34m===============================================================\e[0m"
-echo -e "\e[1;32m[✔] 配置文件与服务一键更新完成！\e[0m"
-echo -e "    ► 节点 SNI / ServerName : \e[1;33m$BEST_DOMAIN\e[0m"
-echo -e "    ► 目标 Dest            : \e[1;33m$BEST_DOMAIN:443\e[0m"
-echo -e "    ► 新生成 ShortID       : \e[1;33m$NEW_SHORT_ID\e[0m"
+echo -e "\e[1;32m[✔] 配置文件更新完成（已保留所有旧 ShortID）！\e[0m"
+echo -e "    ► 最新选定 SNI : \e[1;33m$BEST_DOMAIN\e[0m"
 echo -e "\e[1;34m===============================================================\e[0m"
 
-rm -f auto_update_reality.sh
+rm -f auto_update_reality_keep_old.sh
 EOF
 
-chmod +x auto_update_reality.sh
-./auto_update_reality.sh
+chmod +x auto_update_reality_keep_old.sh
+./auto_update_reality_keep_old.sh
