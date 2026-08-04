@@ -1,4 +1,4 @@
-cat << 'EOF' > auto_update_reality_keep_old.sh
+cat << 'EOF' > auto_update_reality.sh
 #!/bin/bash
 
 if [ "$EUID" -ne 0 ]; then
