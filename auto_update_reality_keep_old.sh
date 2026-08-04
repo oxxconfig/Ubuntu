@@ -43,22 +43,22 @@ if [ -z "$CONFIG_FILE" ]; then
     exit 1
 fi
 
-# 4. 精选非 Apple 优质大厂域名池（无警告，完美兼容 REALITY）
+# 4. 精选优质 REALITY 候选域名池（彻底剔除 fandom、ivi.tv、Apple 及大厂 CDN 域名）
 DOMAINS=(
-    "dl.google.com"
-    "www.microsoft.com"
-    "www.samsung.com"
-    "www.cisco.com"
-    "aws.amazon.com"
-    "www.oracle.com"
-    "www.visa.com"
-    "www.qualcomm.com"
+    "mora.jp"
+    "www.lovelive-anime.jp"
+    "tidal.com"
+    "www.sky.com"
+    "mxj.myanimelist.net"
+    "images.unsplash.com"
+    "dl.acm.org"
+    "sing-box.sagernet.org"
 )
 
 TEMP_FILE=$(mktemp)
 QUALIFIED_COUNT=0
 
-echo -e "\e[1;34m[*] 正在测速并检测域名 TLS1.3 / H2 支持情况...\e[0m"
+echo -e "\e[1;34m[*] 正在测速并检测域名 TLS1.3 / H2 及 CDN 防阻断规则...\e[0m"
 
 for domain in "${DOMAINS[@]}"; do
     CURL_LOG=$(curl -ivs "https://${domain}" --connect-timeout 2 --max-time 3 -o /dev/null 2>&1)
@@ -66,20 +66,33 @@ for domain in "${DOMAINS[@]}"; do
 
     TLS13=false
     H2=false
-    
+    IS_CDN=false
+
+    # 判断 TLS 1.3
     if echo "$CURL_LOG" | grep -qE "TLSv1.3|using TLSv1.3"; then TLS13=true; fi
+    
+    # 判断 HTTP/2
     if echo "$CURL_LOG" | grep -qE "ALPN.*h2|accepted to use h2|HTTP/2 confirmed"; then H2=true; fi
 
+    # 判断是否命中通用大厂 CDN 阻断标头 (Akamai, Cloudflare, Fastly, CloudFront, Imperva)
+    if echo "$CURL_LOG" | grep -iE "ak_p|cf-ray|cloudflare|cloudfront|fastly|imperva|server: Denial" >/dev/null; then
+        IS_CDN=true
+    fi
+
+    # 计算延迟并筛选
     if [[ "$TIME_CONN" =~ ^[0-9]+(\.[0-9]+)?$ ]] && [ "$(awk "BEGIN {print ($TIME_CONN > 0)?1:0}")" -eq 1 ]; then
         LATENCY_MS=$(awk "BEGIN {printf \"%.2f\", $TIME_CONN * 1000}")
-        if [ "$TLS13" = true ] && [ "$H2" = true ]; then
+        
+        if [ "$TLS13" = true ] && [ "$H2" = true ] && [ "$IS_CDN" = false ]; then
             echo "${LATENCY_MS}|${domain}" >> "$TEMP_FILE"
-            echo -e "  [+] \e[1;32m$domain\e[0m - 延迟: ${LATENCY_MS}ms (TLS1.3: Yes, H2: Yes)"
+            echo -e "   [+] \e[1;32m$domain\e[0m - 延迟: ${LATENCY_MS}ms (TLS1.3: Yes, H2: Yes, CDN: 无)"
             
             QUALIFIED_COUNT=$((QUALIFIED_COUNT + 1))
             if [ "$QUALIFIED_COUNT" -ge 3 ]; then
                 break
             fi
+        else
+            echo -e "   [-] \e[1;31m$domain\e[0m - 淘汰 (TLS1.3:$TLS13, H2:$H2, 套了CDN:$IS_CDN)"
         fi
     fi
 done
@@ -90,6 +103,7 @@ if [ ! -s "$TEMP_FILE" ]; then
     exit 1
 fi
 
+# 从最快的 3 个合格域名中随机选择一个
 BEST_DOMAIN=$(sort -n -t'|' -k1 "$TEMP_FILE" | head -n 3 | shuf -n 1 | cut -d'|' -f2)
 rm -f "$TEMP_FILE"
 
@@ -116,7 +130,7 @@ try:
             if stream_settings.get("security") == "reality":
                 reality_settings = stream_settings.get("realitySettings", {})
                 
-                # 更新 SNI
+                # 更新 SNI 和 dest
                 reality_settings["dest"] = f"{new_sni}:443"
                 reality_settings["serverNames"] = [new_sni]
                 
