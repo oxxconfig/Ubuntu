@@ -1,43 +1,73 @@
 #!/usr/bin/env bash
 
 # =============================================================================
-# 系统 Cron 与服务清理函数 (提升 VPS 稳定性 & 释放资源)
+# 系统 Cron 与服务清理函数
+# 提升 VPS 稳定性，避免误删系统组件
 # =============================================================================
+
 function optimize_system_cron() {
-    echo -e "\033[33m[*]\033[0m 正在清理冗余系统 Cron 任务与服务..."
 
-    # 1. 清理无用的系统 Cron 日常/周日常维护任务
-    rm -f /etc/cron.daily/apport \
-          /etc/cron.daily/apt-compat \
-          /etc/cron.daily/man-db \
-          /etc/cron.weekly/man-db
+echo -e "\033[33m[*]\033[0m 正在优化系统 Cron 与后台服务..."
 
-    # 2. 从当前用户 crontab 中安全移除 geodata 定时任务
-    if crontab -l >/dev/null 2>&1; then
-        CURRENT_CRON=$(crontab -l 2>/dev/null | grep -v 'geodata\.sh')
-        if [ -z "$CURRENT_CRON" ]; then
-            # 如果过滤后内容为空，直接清空用户 crontab，避免管道报错
-            crontab -r 2>/dev/null || true
-        else
-            # 重新写入不含 geodata.sh 的内容
-            echo "$CURRENT_CRON" | crontab -
-        fi
+BACKUP_DIR="/root/system_backup_$(date +%Y%m%d_%H%M%S)"
+
+mkdir -p "$BACKUP_DIR"
+
+
+# ============================================================
+# 1. 备份当前 Cron
+# ============================================================
+
+echo -e "\033[33m[*]\033[0m 备份 Cron 配置..."
+
+crontab -l > "$BACKUP_DIR/user_crontab.bak" 2>/dev/null || true
+
+cp -a /etc/cron* "$BACKUP_DIR/" 2>/dev/null || true
+
+
+# ============================================================
+# 2. 删除 Xray geodata 自动更新任务
+# ============================================================
+
+if crontab -l >/dev/null 2>&1; then
+
+    crontab -l \
+    | grep -v '/usr/local/xray-script/tool/geodata.sh' \
+    | crontab -
+
+fi
+
+
+# ============================================================
+# 3. 禁用 apport 崩溃报告
+# ============================================================
+
+if systemctl list-unit-files | grep -q "^apport.service"; then
+
+    systemctl disable --now apport.service 2>/dev/null || true
+
+fi
+
+
+# ============================================================
+# 4. 禁用 network wait 服务
+# ============================================================
+
+for svc in \
+systemd-networkd-wait-online.service \
+NetworkManager-wait-online.service
+do
+
+    if systemctl list-unit-files | grep -q "^${svc}"; then
+
+        systemctl disable --now "$svc" 2>/dev/null || true
+
     fi
 
-    # 2.1 补充清理系统级 /etc/cron.d/ 和 /etc/crontab 中的残留
-    if [ -d "/etc/cron.d" ]; then
-        grep -rl 'geodata\.sh' /etc/cron.d/ 2>/dev/null | xargs rm -f 2>/dev/null || true
-    fi
-    if [ -f "/etc/crontab" ]; then
-        sed -i '/geodata\.sh/d' /etc/crontab
-    fi
+done
 
-    # 3. 彻底停用并禁用崩溃报告服务 (apport)
-    systemctl stop apport 2>/dev/null || true
-    systemctl disable apport 2>/dev/null || true
 
-    # 4. 禁用容易导致网络等待超时的后台服务 (可选增效)
-    systemctl disable --now systemd-networkd-wait-online.service 2>/dev/null || true
+echo -e "\033[32m[✓]\033[0m 系统优化完成"
+echo -e "\033[36m备份位置:\033[0m $BACKUP_DIR"
 
-    echo -e "\033[32m[✓]\033[0m 系统 Cron 任务与后台资源优化完成！"
 }
