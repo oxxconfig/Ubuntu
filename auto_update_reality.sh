@@ -25,65 +25,63 @@ if [ -z "$CONFIG_FILE" ]; then
     exit 1
 fi
 
+# 筛选出的优质、绝无 Cloudflare 5秒盾的自建/大厂域名列表
 DOMAINS=(
-    "www.dell.com"
-    "www.microsoft.com"
-    "www.lovelive-anime.jp"
+    "swdist.apple.com"
+    "updates-http.cdn-apple.com"
     "dl.google.com"
-    "images.unsplash.com"
+    "www.microsoft.com"
+    "www.dell.com"
+    "www.samsung.com"
     "www.cisco.com"
     "www.oracle.com"
-    "www.samsung.com"
     "www.visa.com"
-    "www.spotify.com"
-    "www.bloomberg.com"
     "www.qualcomm.com"
     "www.autodesk.com"
-    "www.shopify.com"
-    "www.twitch.tv"
-    "www.nvidia.com"
-    "www.target.com"
-    "www.amd.com"
 )
 
 TEMP_FILE=$(mktemp)
 
+echo -e "\e[1;34m[*] 正在测速并检测域名 TLS1.3 / H2 支持情况...\e[0m"
+
 for domain in "${DOMAINS[@]}"; do
-    RES=$(curl -ivs "https://${domain}" --connect-timeout 2 \
-        -o /dev/null \
-        -w "%{time_connect}\n" 2>&1)
+    # 1. 抓取 TLS 调试日志到变量
+    CURL_LOG=$(curl -ivs "https://${domain}" --connect-timeout 2 -o /dev/null 2>&1)
+    
+    # 2. 抓取连接时间
+    TIME_CONN=$(curl -s -o /dev/null -w "%{time_connect}" "https://${domain}" --connect-timeout 2)
 
     TLS13=false
     H2=false
     
-    if echo "$RES" | grep -qE "TLSv1.3|using TLSv1.3"; then TLS13=true; fi
-    if echo "$RES" | grep -qE "ALPN.*h2|accepted to use h2|HTTP/2 confirmed"; then H2=true; fi
+    if echo "$CURL_LOG" | grep -qE "TLSv1.3|using TLSv1.3"; then TLS13=true; fi
+    if echo "$CURL_LOG" | grep -qE "ALPN.*h2|accepted to use h2|HTTP/2 confirmed"; then H2=true; fi
 
-    TIME_CONN=$(echo "$RES" | tail -n1)
-
-    if [[ "$TIME_CONN" =~ ^[0-9]+(\.[0-9]+)?$ ]] && [ "$(echo "$TIME_CONN > 0" | bc -l 2>/dev/null || echo 0)" -eq 1 ]; then
+    if [[ "$TIME_CONN" =~ ^[0-9]+(\.[0-9]+)?$ ]] && [ "$(awk "BEGIN {print ($TIME_CONN > 0)?1:0}")" -eq 1 ]; then
         LATENCY_MS=$(awk "BEGIN {printf \"%.2f\", $TIME_CONN * 1000}")
         if [ "$TLS13" = true ] && [ "$H2" = true ]; then
             echo "${LATENCY_MS}|${domain}" >> "$TEMP_FILE"
+            echo -e "  [+] \e[1;32m$domain\e[0m - 延迟: ${LATENCY_MS}ms (TLS1.3: Yes, H2: Yes)"
         fi
     fi
 done
 
-BEST_DOMAIN=$(sort -n -t'|' -k1 "$TEMP_FILE" | head -n 3 | shuf -n 1 | cut -d'|' -f2)
-rm -f "$TEMP_FILE"
-
-if [ -z "$BEST_DOMAIN" ]; then
-    echo -e "\e[1;31m[-] 未检测到合格的伪装域名，请检查网络！\e[0m"
+if [ ! -s "$TEMP_FILE" ]; then
+    echo -e "\e[1;31m[-] 未检测到合格的伪装域名，请检查 VPS 外网连接！\e[0m"
+    rm -f "$TEMP_FILE"
     exit 1
 fi
+
+BEST_DOMAIN=$(sort -n -t'|' -k1 "$TEMP_FILE" | head -n 3 | shuf -n 1 | cut -d'|' -f2)
+rm -f "$TEMP_FILE"
 
 NEW_SHORT_ID=$(openssl rand -hex 4)
 BACKUP_FILE="${CONFIG_FILE}.bak_$(date +%Y%m%d%H%M%S)"
 cp "$CONFIG_FILE" "$BACKUP_FILE"
 
-# Python 精确合并 shortIds 数组
-python3 - << ENDPython
-import json
+# 调用 Python 修改 JSON 配置
+PY_RES=$(python3 - << ENDPython
+import json, sys
 
 config_path = "$CONFIG_FILE"
 new_sni = "$BEST_DOMAIN"
@@ -109,7 +107,6 @@ try:
                 if not isinstance(existing_short_ids, list):
                     existing_short_ids = []
                 
-                # 确保空字符串或重复项被过滤
                 if new_short_id not in existing_short_ids:
                     existing_short_ids.append(new_short_id)
                 
@@ -127,6 +124,12 @@ try:
 except Exception as e:
     print(f"ERROR: {str(e)}")
 ENDPython
+)
+
+if [ "$PY_RES" != "SUCCESS" ]; then
+    echo -e "\e[1;31m[-] 修改 JSON 失败！错误信息: $PY_RES\e[0m"
+    exit 1
+fi
 
 if systemctl is-active --quiet xray; then
     systemctl restart xray
@@ -135,8 +138,10 @@ elif systemctl is-active --quiet XrayR; then
 fi
 
 echo -e "\e[1;34m===============================================================\e[0m"
-echo -e "\e[1;32m[✔] 配置文件更新完成（已保留所有旧 ShortID）！\e[0m"
-echo -e "    ► 最新选定 SNI : \e[1;33m$BEST_DOMAIN\e[0m"
+echo -e "\e[1;32m[✔] 配置文件更新完成（已自动追加新 ShortID 并保留旧 ID）！\e[0m"
+echo -e "    ► 优选 SNI 域名 : \e[1;33m$BEST_DOMAIN\e[0m"
+echo -e "    ► 新增 ShortID  : \e[1;33m$NEW_SHORT_ID\e[0m"
+echo -e "    ► 配置备份文件  : \e[1;30m$BACKUP_FILE\e[0m"
 echo -e "\e[1;34m===============================================================\e[0m"
 
 rm -f auto_update_reality_keep_old.sh
