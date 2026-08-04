@@ -144,7 +144,6 @@ echo -e "    ► 新增 ShortID  : \e[1;33m$NEW_SHORT_ID\e[0m"
 echo -e "    ► 配置备份文件  : \e[1;30m$BACKUP_FILE\e[0m"
 echo -e "\e[1;34m===============================================================\e[0m"
 
-rm -f auto_update_reality_keep_old.sh
 EOF
 
 chmod +x auto_update_reality_keep_old.sh
