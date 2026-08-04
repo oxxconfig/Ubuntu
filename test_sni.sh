@@ -3,6 +3,7 @@ cat << 'EOF' > test_sni.sh
 
 # 候选域名列表（已避开 fandom/apple 等高频滥用域名）
 DOMAINS=(
+    "www.dell.com"
     "www.microsoft.com"
     "www.lovelive-anime.jp"
     "dl.google.com"
@@ -20,7 +21,6 @@ DOMAINS=(
     "www.nvidia.com"
     "www.target.com"
     "www.amd.com"
-    "www.dell.com"
 )
 
 echo -e "\e[1;34m===============================================================\e[0m"
