@@ -43,19 +43,16 @@ if [ -z "$CONFIG_FILE" ]; then
     exit 1
 fi
 
-# 4. 精选优质大厂域名池
+# 4. 精选非 Apple 优质大厂域名池（无警告，完美兼容 REALITY）
 DOMAINS=(
-    "swdist.apple.com"
-    "updates-http.cdn-apple.com"
     "dl.google.com"
     "www.microsoft.com"
-    "www.dell.com"
     "www.samsung.com"
     "www.cisco.com"
+    "aws.amazon.com"
     "www.oracle.com"
     "www.visa.com"
     "www.qualcomm.com"
-    "www.autodesk.com"
 )
 
 TEMP_FILE=$(mktemp)
@@ -64,7 +61,6 @@ QUALIFIED_COUNT=0
 echo -e "\e[1;34m[*] 正在测速并检测域名 TLS1.3 / H2 支持情况...\e[0m"
 
 for domain in "${DOMAINS[@]}"; do
-    # 增加 --max-time 3 限制总耗时，防止 TLS 握手假死
     CURL_LOG=$(curl -ivs "https://${domain}" --connect-timeout 2 --max-time 3 -o /dev/null 2>&1)
     TIME_CONN=$(curl -s -o /dev/null -w "%{time_connect}" "https://${domain}" --connect-timeout 2 --max-time 3)
 
@@ -80,7 +76,6 @@ for domain in "${DOMAINS[@]}"; do
             echo "${LATENCY_MS}|${domain}" >> "$TEMP_FILE"
             echo -e "  [+] \e[1;32m$domain\e[0m - 延迟: ${LATENCY_MS}ms (TLS1.3: Yes, H2: Yes)"
             
-            # 找到 3 个合格域名后立刻退出测速循环，极大加快执行速度
             QUALIFIED_COUNT=$((QUALIFIED_COUNT + 1))
             if [ "$QUALIFIED_COUNT" -ge 3 ]; then
                 break
@@ -95,7 +90,6 @@ if [ ! -s "$TEMP_FILE" ]; then
     exit 1
 fi
 
-# 在收集到的合格域名中随机抽取 1 个
 BEST_DOMAIN=$(sort -n -t'|' -k1 "$TEMP_FILE" | head -n 3 | shuf -n 1 | cut -d'|' -f2)
 rm -f "$TEMP_FILE"
 
@@ -103,7 +97,7 @@ NEW_SHORT_ID=$(openssl rand -hex 4)
 BACKUP_FILE="${CONFIG_FILE}.bak_$(date +%Y%m%d%H%M%S)"
 cp "$CONFIG_FILE" "$BACKUP_FILE"
 
-# 5. 调用 Python 安全合并与更新 JSON 配置
+# 5. 调用 Python 修改配置
 PY_RES=$(python3 - << ENDPython
 import json, sys
 
@@ -122,11 +116,11 @@ try:
             if stream_settings.get("security") == "reality":
                 reality_settings = stream_settings.get("realitySettings", {})
                 
-                # 更新 SNI 伪装目标
+                # 更新 SNI
                 reality_settings["dest"] = f"{new_sni}:443"
                 reality_settings["serverNames"] = [new_sni]
                 
-                # 读取已有 shortIds 并追加新的，保持旧 ID 不丢失
+                # 追加 ShortID
                 existing_short_ids = reality_settings.get("shortIds", [])
                 if not isinstance(existing_short_ids, list):
                     existing_short_ids = []
@@ -163,8 +157,7 @@ elif systemctl is-active --quiet XrayR; then
 fi
 
 echo -e "\e[1;34m===============================================================\e[0m"
-echo -e "\e[1;32m[✔] 配置文件更新完成（已自动追加新 ShortID 并保留旧 ID）！\e[0m"
+echo -e "\e[1;32m[✔] 配置文件更新完成！\e[0m"
 echo -e "    ► 优选 SNI 域名 : \e[1;33m$BEST_DOMAIN\e[0m"
 echo -e "    ► 新增 ShortID  : \e[1;33m$NEW_SHORT_ID\e[0m"
-echo -e "    ► 配置备份文件  : \e[1;30m$BACKUP_FILE\e[0m"
 echo -e "\e[1;34m===============================================================\e[0m"
