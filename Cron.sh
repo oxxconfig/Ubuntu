@@ -8,7 +8,7 @@
 function optimize_system_cron() {
     echo -e "\033[33m[*]\033[0m 正在优化系统 Cron 与后台服务..."
 
-    BACKUP_DIR="/root/system_backup_$(date +%Y%m%d_%H%M%S)"
+    BACKUP_DIR="/root/system_cron_backup_$(date +%Y%m%d_%H%M%S)"
     mkdir -p "$BACKUP_DIR"
 
     # ============================================================
