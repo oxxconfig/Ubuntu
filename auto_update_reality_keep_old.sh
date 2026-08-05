@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# =============================================================================
+# Xray REALITY 动态优选与配置修复脚本 (修复版)
+# =============================================================================
+
 # 1. 检查 root 权限
 if [ "$EUID" -ne 0 ]; then
   echo -e "\e[1;31m[-] 请使用 root 权限运行此脚本！\e[0m"
@@ -39,11 +43,11 @@ for path in "${POSSIBLE_PATHS[@]}"; do
 done
 
 if [ -z "$CONFIG_FILE" ]; then
-    echo -e "\e[1;31m[-] 未自动检测到 config.json 路径！\e[0m"
+    echo -e "\e[1;31m[-] 未自动检测到 Xray config.json 配置文件！\e[0m"
     exit 1
 fi
 
-# 4. 精选优质 REALITY 候选域名池（彻底剔除 fandom、ivi.tv、Apple 及大厂 CDN 域名）
+# 4. 精选优质 REALITY 伪装域名池 (剔除大厂 CDN 阻断域名及敏感域名)
 DOMAINS=(
     "mora.jp"
     "www.lovelive-anime.jp"
@@ -52,13 +56,15 @@ DOMAINS=(
     "mxj.myanimelist.net"
     "images.unsplash.com"
     "dl.acm.org"
-    "sing-box.sagernet.org"
 )
+
+# 固定的 ShortID (必须与客户端配置保持一致)
+TARGET_SHORT_ID="67d93779"
 
 TEMP_FILE=$(mktemp)
 QUALIFIED_COUNT=0
 
-echo -e "\e[1;34m[*] 正在测速并检测域名 TLS1.3 / H2 及 CDN 防阻断规则...\e[0m"
+echo -e "\e[1;34m[*] 正在测速并检测域名 TLS1.3 / H2 及 CDN 特征...\e[0m"
 
 for domain in "${DOMAINS[@]}"; do
     CURL_LOG=$(curl -ivs "https://${domain}" --connect-timeout 2 --max-time 3 -o /dev/null 2>&1)
@@ -74,7 +80,7 @@ for domain in "${DOMAINS[@]}"; do
     # 判断 HTTP/2
     if echo "$CURL_LOG" | grep -qE "ALPN.*h2|accepted to use h2|HTTP/2 confirmed"; then H2=true; fi
 
-    # 判断是否命中通用大厂 CDN 阻断标头 (Akamai, Cloudflare, Fastly, CloudFront, Imperva)
+    # 判断是否命中大厂 CDN 标头 (Akamai, Cloudflare, Fastly, CloudFront, Imperva)
     if echo "$CURL_LOG" | grep -iE "ak_p|cf-ray|cloudflare|cloudfront|fastly|imperva|server: Denial" >/dev/null; then
         IS_CDN=true
     fi
@@ -92,32 +98,31 @@ for domain in "${DOMAINS[@]}"; do
                 break
             fi
         else
-            echo -e "   [-] \e[1;31m$domain\e[0m - 淘汰 (TLS1.3:$TLS13, H2:$H2, 套了CDN:$IS_CDN)"
+            echo -e "   [-] \e[1;31m$domain\e[0m - 淘汰 (TLS1.3:$TLS13, H2:$H2, CDN:$IS_CDN)"
         fi
     fi
 done
 
 if [ ! -s "$TEMP_FILE" ]; then
-    echo -e "\e[1;31m[-] 未检测到合格的伪装域名，请检查 VPS 外网连接！\e[0m"
-    rm -f "$TEMP_FILE"
-    exit 1
+    echo -e "\e[1;33m[!] 未通过动态检测选出新域名，保底使用已验证域名: mora.jp\e[0m"
+    BEST_DOMAIN="mora.jp"
+else
+    # 从响应最快的前 3 个合格域名中随机选择 1 个
+    BEST_DOMAIN=$(sort -n -t'|' -k1 "$TEMP_FILE" | head -n 3 | shuf -n 1 | cut -d'|' -f2)
 fi
-
-# 从最快的 3 个合格域名中随机选择一个
-BEST_DOMAIN=$(sort -n -t'|' -k1 "$TEMP_FILE" | head -n 3 | shuf -n 1 | cut -d'|' -f2)
 rm -f "$TEMP_FILE"
 
-NEW_SHORT_ID=$(openssl rand -hex 4)
+# 备份当前配置文件
 BACKUP_FILE="${CONFIG_FILE}.bak_$(date +%Y%m%d%H%M%S)"
 cp "$CONFIG_FILE" "$BACKUP_FILE"
 
-# 5. 调用 Python 修改配置
+# 5. 调用 Python 安全精准更新配置
 PY_RES=$(python3 - << ENDPython
 import json, sys
 
 config_path = "$CONFIG_FILE"
 new_sni = "$BEST_DOMAIN"
-new_short_id = "$NEW_SHORT_ID"
+target_short_id = "$TARGET_SHORT_ID"
 
 try:
     with open(config_path, 'r', encoding='utf-8') as f:
@@ -130,19 +135,13 @@ try:
             if stream_settings.get("security") == "reality":
                 reality_settings = stream_settings.get("realitySettings", {})
                 
-                # 更新 SNI 和 dest
+                # 强行重置与覆盖 dest 和 serverNames
                 reality_settings["dest"] = f"{new_sni}:443"
                 reality_settings["serverNames"] = [new_sni]
                 
-                # 追加 ShortID
-                existing_short_ids = reality_settings.get("shortIds", [])
-                if not isinstance(existing_short_ids, list):
-                    existing_short_ids = []
+                # 重置 ShortID 为固定值，防止无限追加
+                reality_settings["shortIds"] = [target_short_id]
                 
-                if new_short_id not in existing_short_ids:
-                    existing_short_ids.append(new_short_id)
-                
-                reality_settings["shortIds"] = existing_short_ids
                 stream_settings["realitySettings"] = reality_settings
                 modified = True
 
@@ -168,10 +167,16 @@ if systemctl is-active --quiet xray; then
     systemctl restart xray
 elif systemctl is-active --quiet XrayR; then
     systemctl restart XrayR
+else
+    systemctl restart xray 2>/dev/null || true
 fi
 
 echo -e "\e[1;34m===============================================================\e[0m"
-echo -e "\e[1;32m[✔] 配置文件更新完成！\e[0m"
+echo -e "\e[1;32m[✔] Xray REALITY 配置文件重置并更新成功！\e[0m"
 echo -e "    ► 优选 SNI 域名 : \e[1;33m$BEST_DOMAIN\e[0m"
-echo -e "    ► 新增 ShortID  : \e[1;33m$NEW_SHORT_ID\e[0m"
+echo -e "    ► 目标端口 (dest): \e[1;33m${BEST_DOMAIN}:443\e[0m"
+echo -e "    ► 锁定 ShortID  : \e[1;33m$TARGET_SHORT_ID\e[0m"
 echo -e "\e[1;34m===============================================================\e[0m"
+if [ "$BEST_DOMAIN" != "mora.jp" ]; then
+    echo -e "\e[1;33m[!] 注意：当前优选选中了新域名 [$BEST_DOMAIN]，若客户端SNI固定为mora.jp请同步修改客户端，或直接锁定mora.jp使用。\e[0m"
+fi
